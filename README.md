@@ -1,48 +1,81 @@
 # Claude Taskbar Monitor
 
-Windows 浠诲姟鏍忕姸鎬佺洃鎺ф彃浠讹紝閫傜敤浜?**PowerShell + CCswitch + Claude Code** 鐨勪娇鐢ㄥ満鏅€?
+Windows 任务栏状态监控插件，适用于 **PowerShell + CCswitch + Claude Code** 的使用场景。
 
-鍦?Claude Code 杩愯鏃讹紝閫氳繃浠诲姟鏍?PowerShell 鍥炬爣鐨勯鑹插疄鏃舵彁绀虹姸鎬侊紝鏃犻渶鍒囨崲绐楀彛銆?
+在 Claude Code 运行时，通过任务栏 PowerShell 图标的颜色实时提示状态，无需切换窗口。
 
-## 鐘舵€佽鏄?
+## 状态说明
 
-| 鐘舵€?| 鏁堟灉 | 瑙﹀彂鏃舵満 | 娑堝け鏃舵満 |
+| 状态 | 效果 | 触发时机 | 消失时机 |
 |------|------|----------|----------|
-| 瀹屾垚 | 馃煝 缁胯壊杩涘害鏉?| 姝ｅ父缁撴潫鍥炲 | 鑱氱劍绐楀彛鍚?1 绉掕嚜鍔ㄦ秷澶?|
-| 璀﹀憡 | 馃煛 鏁翠釜鎸夐挳鍙橀粍 | 闇€瑕佺敤鎴锋搷浣滐紙鏉冮檺瀹℃壒銆佺綉缁滃紓甯哥瓑锛?| 鐢ㄦ埛澶勭悊鍚庡伐鍏锋墽琛屾椂鑷姩娓呴櫎 |
-| 绌洪棽 | 鏃犳晥鏋?| 鐒︾偣瑙﹀彂 / 鑷姩娓呴櫎 | 鈥?|
+| 完成 | 🟢 绿色进度条 | 正常结束回复 | 聚焦窗口后 1 秒自动消失 |
+| 警告 | 🟡 整个按钮变黄 | 需要用户操作（权限审批、等待输入等） | 用户处理后工具执行时自动清除 |
+| 空闲 | 无效果 | 焦点触发 / 自动清除 | — |
 
-## 绯荤粺瑕佹眰
+## 系统要求
 
 - Windows 10 / 11
 - PowerShell 5.1+
 - [Claude Code](https://docs.anthropic.com/claude-code) CLI
-- Windows Terminal锛堟帹鑽愶紝浣嗛潪蹇呴』锛?
+- Windows Terminal（推荐，但非必须）
 
-## 瀹夎
+## 安装
 
 ```powershell
-# 1. 涓嬭浇浠撳簱
+# 1. 下载仓库
 git clone https://github.com/lyshrines/claude-taskbar-monitor.git
 cd claude-taskbar-monitor
 
-# 2. 杩愯瀹夎鑴氭湰锛堥渶瑕?PowerShell锛屾櫘閫氭潈闄愬嵆鍙級
+# 2. 运行安装脚本（需要 PowerShell，普通权限即可）
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-瀹夎瀹屾垚鍚?*閲嶅惎 Claude Code** 鍗冲彲鐢熸晥銆?
+安装完成后**重启 Claude Code** 即可生效。
 
-## 鍗歌浇
+## 卸载
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
 ```
 
-## 宸ヤ綔鍘熺悊
+## 工作原理
 
-閫氳繃 Claude Code 鐨?Hook 绯荤粺锛圫essionStart / PreToolUse / PostToolUse / Notification / Stop锛夛紝
-鍦?PowerShell 杩涚▼鐨勪换鍔℃爮鍥炬爣涓婅皟鐢?Windows `ITaskbarList3` COM 鎺ュ彛璁剧疆杩涘害鏉￠鑹层€?
+### 架构概览
 
-## /taskbar-monitor 鍛戒护
+通过 Claude Code 的 Hook 系统（SessionStart / PreToolUse / PostToolUse / Notification / Stop），在 PowerShell 进程的任务栏图标上调用 Windows `ITaskbarList3` COM 接口设置进度条颜色。
 
-瀹夎鍚庡彲鍦?Claude Code 涓繍琛?`/taskbar-monitor` 妫€鏌ョ姸鎬佸苟娴嬭瘯鏄剧ず鏁堟灉銆?
+### 守护进程设计（低延迟核心）
+
+为消除每次 hook 触发时启动新 PowerShell 进程的 3-5 秒延迟，采用持久化守护进程方案：
+
+```
+SessionStart
+    └── hook-session-init.ps1
+            └── 启动 hook-taskbar-daemon.ps1（后台常驻）
+                    └── 预加载 C# DLL（Add-Type 只执行一次）
+                            └── 每 100ms 轮询信号文件
+
+PreToolUse / PostToolUse / Notification / Stop
+    └── hook-*.ps1
+            └── send-taskbar.ps1（分发器）
+                    ├── 守护进程存活 → 写入信号文件（<5ms）→ 守护进程响应（<100ms）
+                    └── 守护进程不在 → 直接调用 taskbar-overlay.ps1（慢，约 3-5s）
+                                            └── 后台重启守护进程
+```
+
+**关键文件：**
+
+| 文件 | 说明 |
+|------|------|
+| `hook-taskbar-daemon.ps1` | 后台守护进程，预加载 DLL，100ms 轮询信号文件 |
+| `send-taskbar.ps1` | 分发器，优先走守护进程快速路径 |
+| `taskbar-overlay.ps1` | 直接调用 COM 接口的慢路径（回退用） |
+| `hook-session-init.ps1` | 会话启动时保存窗口句柄并启动守护进程 |
+| `hook-notification.ps1` | Notification hook，触发警告状态 |
+| `hook-pre-tool.ps1` | PreToolUse hook，触发忙碌状态 |
+| `hook-post-tool.ps1` | PostToolUse hook，触发完成/空闲状态 |
+| `hook-focus-watcher.ps1` | 监听窗口焦点，完成后自动清除 |
+
+## /taskbar-monitor 命令
+
+安装后可在 Claude Code 中运行 `/taskbar-monitor` 检查状态并测试显示效果。
