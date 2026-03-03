@@ -38,3 +38,11 @@ if ($hwnd -eq [IntPtr]::Zero) {
 if ($hwnd -ne [IntPtr]::Zero) {
     $hwnd.ToInt64() | Out-File -FilePath "$env:TEMP\claude-taskbar-hwnd.txt" -Encoding UTF8 -Force
 }
+
+# 预热 DLL 编译：在后台静默执行一次 taskbar-overlay，
+# 首次运行时编译 C# 并保存 DLL，后续 hook 调用可快速加载（< 500ms）
+$scriptsDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$dllPath = "$env:TEMP\ClaudeTaskbarOverlay.dll"
+if (-not (Test-Path $dllPath)) {
+    Start-Process powershell -ArgumentList "-NoProfile -NonInteractive -WindowStyle Hidden -File `"$scriptsDir\taskbar-overlay.ps1`" -Status idle" -WindowStyle Hidden -ErrorAction SilentlyContinue
+}
