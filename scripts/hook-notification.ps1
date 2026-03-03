@@ -3,17 +3,19 @@
     Claude Code Hook: Notification - Claude 发送通知时
 .DESCRIPTION
     当 Claude Code 需要用户注意（请求权限审批、网络问题、等待输入等）时触发。
-    设置为警告状态：红色圆圈 + 任务栏图标变黄色高亮。
+    设置为警告状态：任务栏图标变黄色高亮。
 
-    Hook 输入（stdin）为 JSON，包含 message 等通知内容。
+    立即写入状态文件（先于 COM 操作），避免用户快速确认时 PreToolUse 产生竞争条件。
+    PreToolUse 检测到 warning 状态后立即清除，确保黄色在用户决策后消失。
 #>
 $ErrorActionPreference = "SilentlyContinue"
 if ($env:OS -ne "Windows_NT") { exit 0 }
 
 $scriptsDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$stateFile  = "$env:TEMP\claude-taskbar-state.txt"
 
-# 读取通知内容（可选，用于调试）
-# $notification = $input | Out-String | ConvertFrom-Json
+# 立即写入状态（先于 COM 操作），避免 PreToolUse 因竞争读到旧值
+try { "warning" | Out-File -FilePath $stateFile -Encoding UTF8 -NoNewline -Force } catch {}
 
-# 所有 Notification 事件均视为需要用户注意 → 警告状态
+# 设置任务栏视觉效果
 & "$scriptsDir\taskbar-overlay.ps1" -Status warning
