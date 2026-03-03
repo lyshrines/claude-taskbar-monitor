@@ -47,7 +47,7 @@ for ($i = 0; $i -lt 14400; $i++) {
             $currentState = [System.IO.File]::ReadAllText($stateFile).Trim()
         } catch { $currentState = "" }
         if ($currentState -eq "complete") {
-            & "$scriptsDir\taskbar-overlay.ps1" -Status idle
+            & "$scriptsDir\send-taskbar.ps1" -Status idle
         }
         exit 0
     }

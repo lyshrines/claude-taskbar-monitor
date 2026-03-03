@@ -148,7 +148,7 @@ public static class ClaudeTaskbarOverlay {
 "@
 
 # ── DLL 缓存：首次编译后保存，后续直接加载（避免每次 6 秒延迟）────────────────
-$dllPath  = "$env:TEMP\ClaudeTaskbarOverlay.dll"
+$dllPath  = "$env:USERPROFILE\.claude\scripts\ClaudeTaskbarOverlay.dll"
 $typeName = "ClaudeTaskbarOverlay"
 
 if (-not ([System.Management.Automation.PSTypeName]$typeName).Type) {

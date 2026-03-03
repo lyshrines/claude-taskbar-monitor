@@ -1,10 +1,11 @@
 <#
 .SYNOPSIS
-    Claude Code 会话启动时保存控制台窗口句柄（HWND）
+    Claude Code 会话启动时保存控制台窗口句柄（HWND）并启动守护进程
 .DESCRIPTION
-    Claude Code Hook: PreToolUse / 首次运行时调用。
-    将当前 PowerShell 控制台窗口的 HWND 保存到临时文件，
-    供后续 Hook 子进程读取，解决 Windows Terminal 下句柄获取问题。
+    Claude Code Hook: SessionStart。
+    1. 将当前 PowerShell 控制台窗口的 HWND 保存到临时文件
+    2. 启动后台守护进程 hook-taskbar-daemon.ps1（预加载 DLL，监听信号）
+       守护进程消除每次 hook 调用 Add-Type 的 3-5 秒延迟。
 #>
 $ErrorActionPreference = "SilentlyContinue"
 
@@ -39,10 +40,26 @@ if ($hwnd -ne [IntPtr]::Zero) {
     $hwnd.ToInt64() | Out-File -FilePath "$env:TEMP\claude-taskbar-hwnd.txt" -Encoding UTF8 -Force
 }
 
-# 预热 DLL 编译：在后台静默执行一次 taskbar-overlay，
-# 首次运行时编译 C# 并保存 DLL，后续 hook 调用可快速加载（< 500ms）
+# 启动守护进程（后台常驻，预加载 DLL，监听信号文件）
+# 若已有存活的守护进程则跳过，避免重复启动
 $scriptsDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$dllPath = "$env:TEMP\ClaudeTaskbarOverlay.dll"
-if (-not (Test-Path $dllPath)) {
-    Start-Process powershell -ArgumentList "-NoProfile -NonInteractive -WindowStyle Hidden -File `"$scriptsDir\taskbar-overlay.ps1`" -Status idle" -WindowStyle Hidden -ErrorAction SilentlyContinue
+$pidFile    = "$env:TEMP\claude-taskbar-daemon.pid"
+
+$needStart = $true
+if (Test-Path $pidFile) {
+    try {
+        $storedPid = (Get-Content $pidFile -ErrorAction Stop).Trim()
+        if ($storedPid -and $storedPid -match '^\d+$') {
+            if (Get-Process -Id ([int]$storedPid) -ErrorAction SilentlyContinue) {
+                $needStart = $false
+            }
+        }
+    } catch {}
+}
+
+if ($needStart) {
+    Start-Process powershell -ArgumentList @(
+        "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+        "-File", "`"$scriptsDir\hook-taskbar-daemon.ps1`""
+    ) -WindowStyle Hidden -ErrorAction SilentlyContinue
 }
