@@ -9,23 +9,24 @@
 #>
 $ErrorActionPreference = "SilentlyContinue"
 
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public static class HwndHelper {
-    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
-}
-"@ -ErrorAction SilentlyContinue
+$hwnd = [IntPtr]::Zero
 
-$hwnd = [HwndHelper]::GetConsoleWindow()
+# 策略1: 优先查找 Windows Terminal 进程（用户主力终端）
+try {
+    $wtProc = Get-Process -Name "WindowsTerminal" -ErrorAction SilentlyContinue |
+              Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero } |
+              Select-Object -First 1
+    if ($wtProc) {
+        $hwnd = $wtProc.MainWindowHandle
+    }
+} catch {}
 
-# 若 GetConsoleWindow 返回 0（Windows Terminal 场景），
-# 尝试从进程树找父进程的主窗口
+# 策略2: 回退到进程树向上遍历（兼容其他终端）
 if ($hwnd -eq [IntPtr]::Zero) {
     try {
         $proc = Get-Process -Id $PID -ErrorAction Stop
         while ($proc -and $proc.MainWindowHandle -eq [IntPtr]::Zero) {
-            $parentId = (Get-WmiObject Win32_Process -Filter "ProcessId=$($proc.Id)" `
+            $parentId = (Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.Id)" `
                          -ErrorAction SilentlyContinue).ParentProcessId
             if (-not $parentId) { break }
             $proc = Get-Process -Id $parentId -ErrorAction SilentlyContinue
@@ -33,6 +34,20 @@ if ($hwnd -eq [IntPtr]::Zero) {
         if ($proc -and $proc.MainWindowHandle -ne [IntPtr]::Zero) {
             $hwnd = $proc.MainWindowHandle
         }
+    } catch {}
+}
+
+# 策略3: 最后尝试 GetConsoleWindow（兼容传统 PowerShell 控制台）
+if ($hwnd -eq [IntPtr]::Zero) {
+    try {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class HwndHelper {
+    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+}
+"@ -ErrorAction SilentlyContinue
+        $hwnd = [HwndHelper]::GetConsoleWindow()
     } catch {}
 }
 

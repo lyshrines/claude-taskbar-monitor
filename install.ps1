@@ -18,8 +18,9 @@ $pluginDir   = "$claudeDir\plugins\local\taskbar-monitor\skills\taskbar-monitor"
 $settingsFile = "$claudeDir\settings.json"
 
 $scriptFiles = @(
-    "taskbar-overlay.ps1","hook-session-init.ps1","hook-pre-tool.ps1",
-    "hook-post-tool.ps1","hook-notification.ps1","hook-stop.ps1","hook-focus-watcher.ps1"
+    "taskbar-cli.ps1","taskbar-overlay.ps1","send-taskbar.ps1",
+    "hook-taskbar-daemon.ps1","hook-session-init.ps1","hook-focus-watcher.ps1",
+    "hook-pre-tool.ps1","hook-post-tool.ps1","hook-notification.ps1","hook-stop.ps1"
 )
 
 if ($Uninstall) {
