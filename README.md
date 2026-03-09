@@ -1,9 +1,8 @@
-# Taskbar Monitor
+# Claude Taskbar Monitor
 
-Windows 任务栏状态监控工具，通过任务栏图标颜色实时反映 AI 编码工具的工作状态。
+Windows 任务栏状态监控插件，适用于 **PowerShell + CCswitch + Claude Code** 的使用场景。
 
-支持 **Claude Code**（内置 hook 适配器），同时提供通用 CLI 接口 `taskbar-cli.ps1`，
-任何支持调用外部命令的 AI 工具（Cursor、Aider、Continue.dev 等）均可集成。
+在 Claude Code 运行时，通过任务栏 PowerShell 图标的颜色实时提示状态，无需切换窗口。
 
 ## 状态说明
 
@@ -39,82 +38,43 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
 ```
 
-## 架构
+## 工作原理
+
+### 架构概览
+
+通过 Claude Code 的 Hook 系统（SessionStart / PreToolUse / PostToolUse / Notification / Stop），在 PowerShell 进程的任务栏图标上调用 Windows `ITaskbarList3` COM 接口设置进度条颜色。
+
+### 守护进程设计（低延迟核心）
+
+为消除每次 hook 触发时启动新 PowerShell 进程的 3-5 秒延迟，采用持久化守护进程方案：
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    AI 工具层（适配器）                     │
-│  ┌──────────────┐  ┌──────────┐  ┌──────────┐          │
-│  │ Claude Code   │  │ Cursor   │  │ Aider    │  ...     │
-│  │ hook-*.ps1    │  │ 扩展     │  │ 插件     │          │
-│  └──────┬───────┘  └────┬─────┘  └────┬─────┘          │
-│         │               │             │                  │
-│         └───────────────┼─────────────┘                  │
-│                         ▼                                │
-│              taskbar-cli.ps1（统一 CLI）                  │
-├─────────────────────────┼────────────────────────────────┤
-│                    核心层（工具无关）                       │
-│                         ▼                                │
-│              send-taskbar.ps1（分发器）                    │
-│           ┌─────────────┼─────────────┐                  │
-│           ▼                           ▼                  │
-│  hook-taskbar-daemon.ps1    taskbar-overlay.ps1          │
-│  （常驻，<100ms 响应）       （回退，3-5s）                │
-│           │                                              │
-│           ├── hook-focus-watcher.ps1（complete 后清除）    │
-│           └── hook-session-init.ps1（HWND + 守护进程）    │
-└──────────────────────────────────────────────────────────┘
+SessionStart
+    └── hook-session-init.ps1
+            └── 启动 hook-taskbar-daemon.ps1（后台常驻）
+                    └── 预加载 C# DLL（Add-Type 只执行一次）
+                            └── 每 100ms 轮询信号文件
+
+PreToolUse / PostToolUse / Notification / Stop
+    └── hook-*.ps1
+            └── send-taskbar.ps1（分发器）
+                    ├── 守护进程存活 → 写入信号文件（<5ms）→ 守护进程响应（<100ms）
+                    └── 守护进程不在 → 直接调用 taskbar-overlay.ps1（慢，约 3-5s）
+                                            └── 后台重启守护进程
 ```
 
-### 关键文件
+**关键文件：**
 
-| 文件 | 层级 | 说明 |
-|------|------|------|
-| `taskbar-cli.ps1` | 接口 | **统一 CLI 入口**，所有 AI 工具的唯一调用点 |
-| `send-taskbar.ps1` | 核心 | 分发器，优先走守护进程快速路径 |
-| `hook-taskbar-daemon.ps1` | 核心 | 后台守护进程，预加载 DLL，100ms 轮询 |
-| `taskbar-overlay.ps1` | 核心 | 直接调用 COM 接口（守护进程不在时的回退） |
-| `hook-session-init.ps1` | 核心 | 保存窗口句柄 (HWND)，启动守护进程 |
-| `hook-focus-watcher.ps1` | 核心 | 监听窗口焦点，complete 后自动清除 |
-| `hook-pre-tool.ps1` | 适配 | Claude Code PreToolUse 适配器 |
-| `hook-post-tool.ps1` | 适配 | Claude Code PostToolUse 适配器 |
-| `hook-notification.ps1` | 适配 | Claude Code Notification 适配器 |
-| `hook-stop.ps1` | 适配 | Claude Code Stop 适配器 |
-
-## 跨工具使用
-
-`taskbar-cli.ps1` 是通用入口，任何 AI 工具都可以直接调用：
-
-```powershell
-$cli = "$env:USERPROFILE\.claude\scripts\taskbar-cli.ps1"
-
-# 初始化（工具启动时调用一次）
-powershell -NoProfile -File $cli -Action start
-
-# AI 正常完成回复
-powershell -NoProfile -File $cli -Action complete
-
-# 需要用户操作（权限审批、等待输入等）
-powershell -NoProfile -File $cli -Action notify
-
-# AI 异常结束
-powershell -NoProfile -File $cli -Action error
-
-# 清除状态
-powershell -NoProfile -File $cli -Action idle
-```
-
-### 可用的 Action
-
-| Action | 效果 | 适用场景 |
-|--------|------|---------|
-| `start` | 初始化 HWND + 启动守护进程 | 会话/窗口启动时调用一次 |
-| `tool-begin` | 标记活跃轮次 | AI 开始执行工具前 |
-| `tool-end` | 清除 warning（如果有）| AI 工具执行完毕后 |
-| `notify` | 任务栏变黄 | 需要用户注意时 |
-| `complete` | 任务栏变绿 | AI 正常完成时 |
-| `error` | 任务栏变黄 | AI 异常结束时 |
-| `idle` | 清除所有状态 | 手动重置 |
+| 文件 | 说明 |
+|------|------|
+| `hook-taskbar-daemon.ps1` | 后台守护进程，预加载 DLL，100ms 轮询信号文件 |
+| `send-taskbar.ps1` | 分发器，优先走守护进程快速路径 |
+| `taskbar-overlay.ps1` | 直接调用 COM 接口的慢路径（回退用） |
+| `hook-session-init.ps1` | 会话启动时保存窗口句柄并启动守护进程 |
+| `hook-notification.ps1` | Notification hook，触发警告状态 |
+| `hook-pre-tool.ps1` | PreToolUse hook，触发忙碌状态 |
+| `hook-post-tool.ps1` | PostToolUse hook，触发完成/空闲状态 |
+| `hook-focus-watcher.ps1` | 监听窗口焦点，完成后自动清除 |
 
 ## /taskbar-monitor 命令
 
