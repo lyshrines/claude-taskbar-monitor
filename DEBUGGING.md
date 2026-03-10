@@ -186,6 +186,27 @@ HWND 无效则所有 COM 调用静默失败，任务栏无任何变化。
 - 错误停止时会有短暂绿色闪烁（bat 先写 complete，PS1 后覆盖为 warning），可接受
 - sync2.ps1 已更新，包含 bat 文件同步
 
+### 2026-03-10 修复：确认后黄色不消失（PreToolUse 时机错误）
+
+**问题**：用户确认权限后，黄色一直不消失，直到下一个权限弹框出现才消失。
+
+**根本原因**：Hook 触发顺序是：
+
+```
+PreToolUse → 权限弹框出现 → Notification（变黄）→ 用户确认 → 工具执行 → PostToolUse
+```
+
+原来 PreToolUse 里做清除 warning 的逻辑，但 PreToolUse 在弹框出现**之前**就触发了，所以它清的是**上一个**弹框的黄色，永远晚一步。正确的清除时机是 **PostToolUse**（工具执行完毕 = 用户已确认之后）。
+
+**本次修复（2026-03-10）：**
+1. 新增 `notify-idle.bat`：cmd 快路径写入 idle 状态（≤50ms，避免 PS 启动开销）
+2. settings.json 新增 PostToolUse hook → 调用 `notify-idle.bat`
+3. 更新 `sync2.ps1` 包含 `notify-idle.bat`
+
+**PreToolUse 的 warning 清除逻辑保留**（作为兜底），但主清除责任已转移给 PostToolUse。
+
+---
+
 ### 2026-03-10 结论：变黄延迟的根本限制（已知无法消除）
 
 **最终结论**：变黄延迟约 6 秒是 **Windows Defender 扫描新进程的固定开销**，与脚本内容无关。
