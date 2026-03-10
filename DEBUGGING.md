@@ -164,6 +164,48 @@ HWND 无效则所有 COM 调用静默失败，任务栏无任何变化。
 - 移除 `"matcher": "permission_prompt"` —— git/Bash 权限弹框使用不同的 notification 类型，有 matcher 时不触发；去掉 matcher 后全类型都能触发
 - 实测：git commit 权限弹框出现时黄色正常触发 ✅
 
+### 2026-03-10 修复：变黄延迟 6 秒 + 黄色消失过慢
+
+**问题1根本原因**：Notification hook 即使用内联命令，`powershell.exe` 进程启动本身在 Defender 扫描下需 3-6 秒。
+
+**问题2根本原因**：确认弹框后的延迟链：
+- PostToolUse：启动 powershell（3-6s）+ 什么都不做
+- Stop 调试日志命令：再启动 powershell（3-6s）
+- hook-stop.ps1：再启动 powershell（3-6s）
+- 合计：用户确认后 9-18 秒黄色才消失
+
+**本次修复（2026-03-10）：**
+1. 创建 `notify-warning.bat` / `notify-complete.bat`：cmd.exe 调用 bat 文件启动耗时 ≤50ms（vs powershell 3-6s）
+2. Notification hook 改用 `cmd /c notify-warning.bat` → 变黄延迟从 3-6s 降至 ≤200ms
+3. 删除 PostToolUse hook（该 hook 启动 powershell 但什么都不做，纯浪费 3-6s）
+4. Stop hook：增加 `cmd /c notify-complete.bat` 作为**第一个命令**（快速路径），保留 hook-stop.ps1 为第二命令处理错误情况
+5. 删除 PreToolUse 和 Stop 中的调试日志命令（各减少 3-6s 开销）
+
+**副作用：**
+- hook_fired.txt 和 hook_stop.txt 不再更新（调试日志已移除）
+- 错误停止时会有短暂绿色闪烁（bat 先写 complete，PS1 后覆盖为 warning），可接受
+- sync2.ps1 已更新，包含 bat 文件同步
+
+### 2026-03-10 结论：变黄延迟的根本限制（已知无法消除）
+
+**最终结论**：变黄延迟约 6 秒是 **Windows Defender 扫描新进程的固定开销**，与脚本内容无关。
+
+- 无论用 PowerShell、Python 还是 Node.js，每个新启动的 `powershell.exe` 都会被 Defender 扫描约 3-6 秒
+- bat 文件方案（`cmd.exe` 调用）理论上 ≤50ms，但 bat 里调用 powershell 仍触发扫描
+- **唯一根治方案**：请 IT 管理员将 PowerShell 脚本目录加入 Defender 排除列表（需管理员权限，个人无法操作）
+
+**变黄消失过慢**：移除 PostToolUse hook 后已改善（原来每次工具调用都白费 3-6s 启动 powershell）。
+
+**最终稳定的 settings.json hook 配置：**
+
+| Hook | 命令 | 说明 |
+|------|------|------|
+| SessionStart | hook-session-init.ps1 | 启动守护进程，保存 HWND |
+| PreToolUse | hook-pre-tool.ps1 | 清除 warning 状态 |
+| Notification | hook-notification-wrapper.ps1（或内联命令） | 变黄（有 6s 固定延迟，已知限制） |
+| Stop | hook-stop.ps1 | 变绿（正常）/ 变黄（error 情况） |
+| PostToolUse | **已移除** | 移除后减少 3-6s 无效开销 |
+
 ---
 
 ## 诊断命令速查
