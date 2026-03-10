@@ -186,7 +186,7 @@ HWND 无效则所有 COM 调用静默失败，任务栏无任何变化。
 - 错误停止时会有短暂绿色闪烁（bat 先写 complete，PS1 后覆盖为 warning），可接受
 - sync2.ps1 已更新，包含 bat 文件同步
 
-### 2026-03-10 修复：确认后黄色不消失（PreToolUse 时机错误）
+### 2026-03-10 修复：确认后黄色不消失（PreToolUse 时机错误）✅ 已验证
 
 **问题**：用户确认权限后，黄色一直不消失，直到下一个权限弹框出现才消失。
 
@@ -196,36 +196,45 @@ HWND 无效则所有 COM 调用静默失败，任务栏无任何变化。
 PreToolUse → 权限弹框出现 → Notification（变黄）→ 用户确认 → 工具执行 → PostToolUse
 ```
 
-原来 PreToolUse 里做清除 warning 的逻辑，但 PreToolUse 在弹框出现**之前**就触发了，所以它清的是**上一个**弹框的黄色，永远晚一步。正确的清除时机是 **PostToolUse**（工具执行完毕 = 用户已确认之后）。
+PreToolUse 在弹框出现**之前**触发，清的是上一个弹框的黄色，永远晚一步。正确的清除时机是 **PostToolUse**（工具执行完毕 = 用户已确认之后）。
 
-**本次修复（2026-03-10）：**
-1. 新增 `notify-idle.bat`：cmd 快路径写入 idle 状态（≤50ms，避免 PS 启动开销）
-2. settings.json 新增 PostToolUse hook → 调用 `notify-idle.bat`
-3. 更新 `sync2.ps1` 包含 `notify-idle.bat`
+**尝试过的失败方案（不要重复）：**
+- `cmd /c notify-idle.bat`：bat 文件在 Claude Code hook 执行环境下会挂起，无法使用
+- `powershell -Command "inline..."` 内联命令：引号在 hook 执行环境中解析有问题，文件不写入
 
-**PreToolUse 的 warning 清除逻辑保留**（作为兜底），但主清除责任已转移给 PostToolUse。
+**最终有效方案（2026-03-10 验证）：**
+1. `hook-post-tool.ps1` 加入清除逻辑：读取 state 文件，仅在 `warning` 状态时写入 `idle`
+2. settings.json PostToolUse hook 使用 `powershell -File hook-post-tool.ps1`（`-File` 方式是 hook 系统唯一可靠的调用方式）
+3. PreToolUse 的 warning 清除逻辑保留作为兜底
 
 ---
 
 ### 2026-03-10 结论：变黄延迟的根本限制（已知无法消除）
 
-**最终结论**：变黄延迟约 6 秒是 **Windows Defender 扫描新进程的固定开销**，与脚本内容无关。
+**最终结论**：变黄延迟约 3-6 秒是 **Windows Defender 扫描 powershell.exe 进程的固定开销**。
 
-- 无论用 PowerShell、Python 还是 Node.js，每个新启动的 `powershell.exe` 都会被 Defender 扫描约 3-6 秒
-- bat 文件方案（`cmd.exe` 调用）理论上 ≤50ms，但 bat 里调用 powershell 仍触发扫描
-- **唯一根治方案**：请 IT 管理员将 PowerShell 脚本目录加入 Defender 排除列表（需管理员权限，个人无法操作）
+- `cmd /c bat` 方案：bat 文件在 Claude Code hook 系统中会挂起，无效
+- `powershell -Command "内联"` 方案：引号解析失败，无效
+- `powershell -File xxx.ps1` 方案：唯一可靠，但有 3-6s Defender 扫描延迟
+- **唯一根治方案**：请 IT 管理员将 PowerShell 加入 Defender 排除列表（个人无权限）
 
-**变黄消失过慢**：移除 PostToolUse hook 后已改善（原来每次工具调用都白费 3-6s 启动 powershell）。
+**诊断关键步骤（已验证有效）：**
+```powershell
+# 手动写 warning 到信号文件，验证守护进程→HWND链路
+[IO.File]::WriteAllText("$env:TEMP\claude-taskbar-signal.txt","warning")
+# 若任务栏立即变黄 → 守护进程和HWND正常，问题在hook写入
+# 若任务栏无变化 → 检查HWND有效性和守护进程存活状态
+```
 
-**最终稳定的 settings.json hook 配置：**
+**最终稳定的 settings.json hook 配置（2026-03-10 验证通过）：**
 
 | Hook | 命令 | 说明 |
 |------|------|------|
-| SessionStart | hook-session-init.ps1 | 启动守护进程，保存 HWND |
-| PreToolUse | hook-pre-tool.ps1 | 清除 warning 状态 |
-| Notification | hook-notification-wrapper.ps1（或内联命令） | 变黄（有 6s 固定延迟，已知限制） |
-| Stop | hook-stop.ps1 | 变绿（正常）/ 变黄（error 情况） |
-| PostToolUse | **已移除** | 移除后减少 3-6s 无效开销 |
+| SessionStart | `hook-session-init.ps1` | 启动守护进程，保存 HWND |
+| PreToolUse | `hook-pre-tool.ps1` | warning 状态兜底清除 |
+| Notification | `hook-notification-wrapper.ps1` | 变黄（3-6s Defender 延迟，已知限制） |
+| PostToolUse | `hook-post-tool.ps1` | 工具完成后清除 warning（主清除路径） |
+| Stop | `hook-stop.ps1` | 变绿（正常完成）/ 变黄（error） |
 
 ---
 

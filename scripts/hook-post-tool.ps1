@@ -2,11 +2,21 @@
 .SYNOPSIS
     Claude Code Hook: PostToolUse - 工具调用后
 .DESCRIPTION
-    AI 完成一个工具调用时触发。目前无操作。
-    warning 状态的清除由 PreToolUse 负责（用户确认后下次工具调用前清除），
-    不在此处处理，避免在用户尚未确认权限时提前清除黄色。
-    Hook 输入（stdin）为 JSON，包含 tool_name / tool_input / tool_response。
+    工具执行完毕时触发（= 用户已确认权限 + 工具已运行）。
+    若当前状态为 warning，清除为 idle，让守护进程撤销黄色。
+    仅在 warning 状态时操作，避免对无权限弹框的普通工具调用产生额外写入。
 #>
 param()
 $ErrorActionPreference = "SilentlyContinue"
 if ($env:OS -ne "Windows_NT") { exit 0 }
+
+$stateFile  = "$env:TEMP\claude-taskbar-state.txt"
+$signalFile = "$env:TEMP\claude-taskbar-signal.txt"
+
+try {
+    $state = [System.IO.File]::ReadAllText($stateFile).Trim()
+    if ($state -eq "warning") {
+        [System.IO.File]::WriteAllText($stateFile,  "idle")
+        [System.IO.File]::WriteAllText($signalFile, "idle")
+    }
+} catch {}
