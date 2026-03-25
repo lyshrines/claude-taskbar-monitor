@@ -64,25 +64,10 @@ if ($hwnd -eq [IntPtr]::Zero) {
 $hwnd.ToInt64() | Out-File -FilePath "$env:TEMP\claude-taskbar-hwnd.txt" -Encoding UTF8 -Force
 
 # 启动守护进程（后台常驻，预加载 DLL，监听信号文件）
-# 若已有存活的守护进程则跳过，避免重复启动
+# 每次 SessionStart 都无条件启动新守护进程，旧实例检测到 PID 文件变化后自行退出
 $scriptsDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$pidFile    = "$env:TEMP\claude-taskbar-daemon.pid"
 
-$needStart = $true
-if (Test-Path $pidFile) {
-    try {
-        $storedPid = (Get-Content $pidFile -ErrorAction Stop).Trim()
-        if ($storedPid -and $storedPid -match '^\d+$') {
-            if (Get-Process -Id ([int]$storedPid) -ErrorAction SilentlyContinue) {
-                $needStart = $false
-            }
-        }
-    } catch {}
-}
-
-if ($needStart) {
-    Start-Process powershell -ArgumentList @(
-        "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
-        "-File", "`"$scriptsDir\hook-taskbar-daemon.ps1`""
-    ) -WindowStyle Hidden -ErrorAction SilentlyContinue
-}
+Start-Process powershell -ArgumentList @(
+    "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+    "-File", "`"$scriptsDir\hook-taskbar-daemon.ps1`""
+) -WindowStyle Hidden -ErrorAction SilentlyContinue
